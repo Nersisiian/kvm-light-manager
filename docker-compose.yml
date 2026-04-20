@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: kvm_user
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: kvm_light
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kvm_user"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    environment:
+      KVM_POSTGRES_HOST: postgres
+      KVM_REDIS_HOST: redis
+      KVM_AGENT_ZMQ_ENDPOINT: tcp://agent:5555
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./alembic:/app/alembic
+    command: >
+      sh -c "
+        alembic upgrade head &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+      "
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    environment:
+      ZMQ_BIND_ADDR: tcp://0.0.0.0:5555
+      REDIS_HOST: redis
+      SIM_ERROR_RATE: 0.05
+    depends_on:
+      - redis
+    ports:
+      - "5555:5555"
+    command: python -m agent.main
+
+volumes:
+  postgres_data:
